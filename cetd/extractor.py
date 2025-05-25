@@ -32,10 +32,41 @@ KG_MARK = 'mark'
 KG_GEOMETRY = 'geometry'
 
 LINK_TAGS = {'a', 'button', 'select'}
-JS_TAGS = {'script', 'noscript', 'style', 'comments'}
+JS_TAGS = {'style', 'script', 'picture', 'img', 'svg', 'path', 'button', 'fin-streamer', 'footer'}
 
 whitespace_regex = re.compile(r'(\s{2,}|\t)')
 
+attribute_blacklist = [
+    KG_CHAR_NUM, 
+    KG_TAG_NUM, 
+    KG_LINKCHAR_NUM, 
+    KG_LINKTAG_NUM, 
+    KG_TEXT_DENSITY, 
+    KG_DENSITY_SUM, 
+    KG_MAX_DENSITY_SUM, 
+    KG_MARK]+[
+    "style", "tabindex", "role", "dir", "lang", "title",
+    "width", "height", "align", "valign",
+    "border", "cellspacing", "cellpadding",
+    "frameborder", "marginwidth", "marginheight"
+    ]
+
+# 접두사 필터 함수
+def is_blacklisted(attr_name):
+    return (
+        attr_name in attribute_blacklist or
+        attr_name.startswith("aria-") or
+        attr_name.startswith("on") or
+        attr_name.startswith("data-")
+    )
+    
+def clean_attributes(soup):
+    for tag in soup.find_all(True):
+        attrs_to_delete = [attr for attr in tag.attrs if is_blacklisted(attr)]
+        for attr in attrs_to_delete:
+            del tag.attrs[attr]
+    return soup
+    
 def process_text(web_element):
     soup = BeautifulSoup(str(web_element), "html.parser")
     for br in soup.find_all("br"):
@@ -54,11 +85,6 @@ def process_text(web_element):
     text = "\n\n".join(line for line in lines if line)
 
     return text
-
-def first_child(web_element: Tag) -> Tag:
-    for c in web_element.children:
-        if isinstance(c, Tag):
-            return c
 
 def search_tag(web_element: Tag, attribute: str, value: float) -> Tag:
     """
@@ -79,7 +105,7 @@ def search_tag(web_element: Tag, attribute: str, value: float) -> Tag:
     if target is None:
         # find the next usable sibling and search it
         for sibling in web_element.descendants:
-            if isinstance(sibling, Tag):
+            if isinstance(sibling, Tag) and sibling.name != None:
                 target = search_tag(sibling, attribute, value)
                 break
     return target
@@ -110,7 +136,7 @@ def find_max_density_sum(web_element: Tag) -> float:
         max_density_sum = 0
     temp_max = 0
     for child in web_element.children:
-        if isinstance(child, Tag):
+        if isinstance(child, Tag) and child.name != None:
             temp_max = find_max_density_sum(child)
         max_density_sum = max(temp_max, max_density_sum)
     web_element[KG_MAX_DENSITY_SUM] = max_density_sum
@@ -134,7 +160,7 @@ def get_threshold(web_element: Tag, max_density_sum: float) -> float:
 def set_mark(web_element: Tag, mark: int):
     web_element[KG_MARK] = mark
     for child in web_element.children:
-        if isinstance(child, Tag):
+        if isinstance(child, Tag) and child.name != None:
             set_mark(child, mark)
 
 
@@ -144,8 +170,8 @@ def mark_content(web_element: Tag, threshold: float):
     mark = int(web_element[KG_MARK])
     if mark != 1 and threshold < text_density:  # again, this is written a stupid way
         find_max_density_sum_tag(web_element, max_density_sum)
-        if isinstance(web_element, Tag):
-            for child in web_element.children:
+        for child in web_element.children:
+            if isinstance(web_element, Tag) and child.name != None:
                 mark_content(child, threshold)
 
 
@@ -185,20 +211,20 @@ class AbstractExtractor(ABC):
         return BeautifulSoup(html, 'html.parser').body
 
     def extract_content(self, html: str) -> str:
-        bs = self.create_doc(html)   
+        bs = self.create_doc(html)
         self.preprocess_dom(bs)
         self.count_chars(bs)
         self.count_tags(bs)
         self.count_link_chars(bs)
         self.count_link_tags(bs)
-        print(bs[KG_CHAR_NUM], bs[KG_LINKCHAR_NUM])
-        print(bs[KG_TAG_NUM], bs[KG_LINKTAG_NUM])
+        # print(bs[KG_CHAR_NUM], bs[KG_LINKCHAR_NUM])
+        # print(bs[KG_TAG_NUM], bs[KG_LINKTAG_NUM])
         char_num = bs[KG_CHAR_NUM]
         linkchar_num = bs[KG_LINKCHAR_NUM]
         ratio = linkchar_num / char_num
         self.compute_text_density(bs, ratio)
         self.compute_density_sum(bs, ratio)
-        print("body density:", bs[KG_TEXT_DENSITY])
+        # print("body density:", bs[KG_TEXT_DENSITY])
         # print("body sum: ",bs[KG_DENSITY_SUM])
         # logger.debug("Density sums: ")
         max_density_sum = find_max_density_sum(bs)
@@ -206,8 +232,8 @@ class AbstractExtractor(ABC):
          # for l in bs.descendants if isinstance(l, Tag)]
         set_mark(bs, 0)
         threshold = get_threshold(bs, max_density_sum)
-        print("thres: ", threshold)
-        print("max density sum", max_density_sum)
+        # print("thres: ", threshold)
+        # print("max density sum", max_density_sum)
         mark_content(bs, threshold)
         # we don't actually care about cleaning the tree or returning DOM nodes
         kws = {KG_MARK: 0}
@@ -220,14 +246,10 @@ class AbstractExtractor(ABC):
         # remove excess whitespace and duplicate newline characters
         # output_dirty = whitespace_regex.sub(' ', output_dirty)
         output = '\n'.join(list(filter(lambda s: len(s.strip()) > 0, output_dirty.splitlines())))
-        for tag in bs.find_all():
-            for target in [KG_CHAR_NUM, KG_TAG_NUM, KG_LINKCHAR_NUM, KG_LINKTAG_NUM, KG_TEXT_DENSITY, KG_DENSITY_SUM, KG_MAX_DENSITY_SUM, KG_MARK, 'class']:
-                try:
-                    del tag[target]
-                except:
-                    pass
-        print(process_text(bs))
-        return bs
+                    
+        cleaned_soup = clean_attributes(bs)
+        # print(process_text(bs))
+        return cleaned_soup
 
     def count_chars(self, web_element: Tag):
         """
@@ -271,7 +293,7 @@ class AbstractExtractor(ABC):
         """
         linkchar_num = 0
         for child in web_element.children:
-            if isinstance(child, Tag):
+            if isinstance(child, Tag) and child.name != None:
                 self.count_link_chars(child)
                 
         if is_ignorable(web_element, self.ignorable_tags):
@@ -280,7 +302,7 @@ class AbstractExtractor(ABC):
 
         else:
             for child in web_element.children:
-                if isinstance(child, Tag):
+                if isinstance(child, Tag) and child.name != None:
                     linkchar_num += child[KG_LINKCHAR_NUM]
                 
         web_element[KG_LINKCHAR_NUM] = linkchar_num
@@ -300,7 +322,7 @@ class AbstractExtractor(ABC):
         :return:
         """
         for child in web_element.children:
-            if isinstance(child, Tag):
+            if isinstance(child, Tag) and child.name != None:
                 child[KG_LINKCHAR_NUM] = child[KG_CHAR_NUM]
                 self.update_link_chars(child)
 
@@ -315,7 +337,7 @@ class AbstractExtractor(ABC):
         """
         linktag_num = 0
         for child in web_element.children:
-            if isinstance(child, Tag):
+            if isinstance(child, Tag) and child.name != None:
                 self.count_link_tags(child)
                 
         if is_ignorable(web_element, self.ignorable_tags):
@@ -323,7 +345,7 @@ class AbstractExtractor(ABC):
             self.update_link_tags(web_element)
         else:
             for child in web_element.children:
-                if isinstance(child, Tag):
+                if isinstance(child, Tag) and child.name != None:
                     linktag_num += child[KG_LINKTAG_NUM]
                     if is_ignorable(child, self.ignorable_tags):
                         linktag_num += 1
@@ -346,7 +368,7 @@ class AbstractExtractor(ABC):
         :return:
         """
         for child in web_element.children:
-            if isinstance(child, Tag):
+            if isinstance(child, Tag) and child.name != None:
                 child[KG_LINKTAG_NUM] = child[KG_TAG_NUM]
                 self.update_link_tags(child)
                 
@@ -375,10 +397,10 @@ class AbstractExtractor(ABC):
             if isinstance(sib, Tag):
                 self.preprocess_dom(sib)
                 
-        # None 인 노드 제거
-        for child in list(web_element.contents):
-            if getattr(child, 'name', None) is None:
-                child.extract()
+        # # None 인 노드 제거
+        # for child in list(web_element.contents):
+        #     if getattr(child, 'name', None) is None:
+        #         child.extract()
 
 class Extractor(AbstractExtractor):
     """
@@ -422,7 +444,7 @@ class Extractor(AbstractExtractor):
             # assert density > 0
         web_element[KG_TEXT_DENSITY] = max(density, 0)
         for child in web_element.children:
-            if isinstance(child, Tag):
+            if isinstance(child, Tag) and child.name != None:
                 self.compute_text_density(child, ratio)
 
     def compute_density_sum(self, web_element: Tag, ratio: float):
@@ -441,13 +463,13 @@ class Extractor(AbstractExtractor):
         content = ' '.join(web_element.stripped_strings)
         from_ = 0
         
-        if isinstance(web_element, Tag):
+        if isinstance(web_element, Tag) and web_element.name != None:
             for child in web_element.children:
-                if isinstance(child, Tag):
+                if isinstance(child, Tag) and child.name != None:
                     self.compute_density_sum(child, ratio)
                     
             for child in web_element.children:
-                if isinstance(child, Tag):
+                if isinstance(child, Tag) and child.name != None:
                     density_sum += child[KG_TEXT_DENSITY]
                     char_num_sum += child[KG_CHAR_NUM]
                     child_content = ' '.join(child.stripped_strings)
